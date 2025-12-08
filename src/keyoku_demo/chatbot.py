@@ -154,15 +154,21 @@ class KeyokuChatbot:
             return [{"error": str(e)}]
 
     def get_relationships(self, limit: int = 20) -> list[dict]:
-        """Get relationships from knowledge graph."""
+        """Get relationships from knowledge graph with resolved entity names."""
         try:
+            # Build entity ID -> name lookup
+            entities = self.keyoku.entities.list(limit=100)
+            entity_names = {e.id: e.canonical_name for e in entities}
+
             rel_list = self.keyoku.relationships.list(limit=limit)
             relationships = []
             for rel in rel_list:
+                source_name = entity_names.get(rel.source_entity_id, rel.source_entity_id[:8] + "...")
+                target_name = entity_names.get(rel.target_entity_id, rel.target_entity_id[:8] + "...")
                 relationships.append({
-                    "source": rel.source_entity_id,
+                    "source": source_name,
                     "type": rel.relationship_type,
-                    "target": rel.target_entity_id,
+                    "target": target_name,
                 })
             return relationships
         except KeyokuError as e:
@@ -171,25 +177,35 @@ class KeyokuChatbot:
     def get_cleanup_suggestions(self) -> dict:
         """Get cleanup suggestions from Keyoku."""
         try:
-            # This endpoint may not exist in all versions
-            # Using the search with low threshold as a workaround
+            response = self.keyoku.cleanup.suggestions()
             return {
                 "suggestions": [
-                    {"strategy": "stale", "description": "Remove memories not accessed recently"},
-                    {"strategy": "low_importance", "description": "Remove low importance memories"},
-                    {"strategy": "never_accessed", "description": "Remove memories never accessed"},
-                ]
+                    {
+                        "strategy": s.strategy,
+                        "description": s.description,
+                        "count": s.count,
+                    }
+                    for s in response.suggestions
+                ],
+                "usage": {
+                    "memories_stored": response.usage.memories_stored,
+                    "memories_limit": response.usage.memories_limit,
+                    "percentage": response.usage.percentage,
+                },
             }
-        except Exception as e:
+        except KeyokuError as e:
             return {"error": str(e)}
 
-    def execute_cleanup(self, strategy: str, limit: int = 10) -> dict:
+    def execute_cleanup(self, strategy: str, limit: int = 50, dry_run: bool = False) -> dict:
         """Execute memory cleanup with given strategy."""
         try:
-            # Note: This may need to be implemented via direct API call
-            # if the SDK doesn't have this method yet
-            return {"message": f"Cleanup with strategy '{strategy}' not yet implemented in SDK"}
-        except Exception as e:
+            response = self.keyoku.cleanup.execute(strategy, limit=limit, dry_run=dry_run)
+            return {
+                "deleted_count": response.deleted_count,
+                "deleted_ids": response.deleted_ids,
+                "dry_run": dry_run,
+            }
+        except KeyokuError as e:
             return {"error": str(e)}
 
     def clear_all_memories(self) -> dict:
@@ -199,11 +215,34 @@ class KeyokuChatbot:
             return {"success": True, "message": "All memories deleted"}
         except KeyokuError as e:
             return {"success": False, "error": str(e)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def export_data(self) -> dict:
-        """Export all user data."""
+        """Export all user data (GDPR export)."""
         try:
-            # Note: Export functionality may need direct API call
-            return {"message": "Export functionality - check API documentation"}
-        except Exception as e:
+            response = self.keyoku.data.export()
+            return {
+                "job_id": response.job_id,
+                "status": response.status,
+                "message": f"Export job started with ID: {response.job_id}",
+            }
+        except KeyokuError as e:
             return {"error": str(e)}
+
+    def get_audit_logs(self, limit: int = 20) -> list[dict]:
+        """Get recent audit logs."""
+        try:
+            response = self.keyoku.audit.list(limit=limit)
+            logs = []
+            for log in response.audit_logs:
+                logs.append({
+                    "id": log.id,
+                    "operation": log.operation,
+                    "resource_type": log.resource_type,
+                    "resource_id": log.resource_id or "",
+                    "created_at": str(log.created_at),
+                })
+            return logs
+        except KeyokuError as e:
+            return [{"error": str(e)}]

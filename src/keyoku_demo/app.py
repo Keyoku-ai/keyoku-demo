@@ -245,6 +245,7 @@ def update_panels():
     memories = bot.get_memories()
     entities = bot.get_entities()
     relationships = bot.get_relationships()
+    audit_logs = get_audit_logs()
 
     # Format memories for display
     memory_rows = []
@@ -263,36 +264,78 @@ def update_panels():
     # Format relationships
     rel_rows = [[r.get("source", ""), r.get("type", ""), r.get("target", "")] for r in relationships if "error" not in r]
 
-    return stats_text, memory_rows, entity_rows, rel_rows
+    return stats_text, memory_rows, entity_rows, rel_rows, audit_logs
 
 
-def clear_memories():
-    """Clear all memories with confirmation."""
+def clear_memories_and_chat():
+    """Clear all memories and chat history."""
     bot = get_chatbot()
     result = bot.clear_all_memories()
     if result.get("success"):
-        return "✅ All memories cleared"
-    return f"❌ Error: {result.get('error', 'Unknown error')}"
+        return "✅ All memories cleared", []
+    return f"❌ Error: {result.get('error', 'Unknown error')}", []
+
+
+def new_chat_session():
+    """Start a new chat session (clears chat but keeps memories).
+
+    This tests if the memory system truly works by removing the LLM's
+    conversation context while preserving stored memories.
+    """
+    return "🔄 New session started - memories preserved! Try asking 'What do you know about me?'", []
 
 
 def show_cleanup():
-    """Show cleanup suggestions."""
+    """Show cleanup suggestions with counts and usage info."""
     bot = get_chatbot()
     suggestions = bot.get_cleanup_suggestions()
     if "error" in suggestions:
         return f"❌ Error: {suggestions['error']}"
 
-    lines = ["**Cleanup Strategies:**"]
+    lines = []
+
+    # Show usage info
+    usage = suggestions.get("usage", {})
+    if usage:
+        pct = usage.get("percentage", 0)
+        stored = usage.get("memories_stored", 0)
+        limit = usage.get("memories_limit", 0)
+        lines.append(f"**Storage Usage:** {stored}/{limit} memories ({pct}%)")
+        lines.append("")
+
+    lines.append("**Cleanup Strategies:**")
     for s in suggestions.get("suggestions", []):
-        lines.append(f"- **{s['strategy']}**: {s['description']}")
+        count = s.get("count", 0)
+        lines.append(f"- **{s['strategy']}**: {s['description']} ({count} memories)")
+
     return "\n".join(lines)
 
 
 def export_data():
-    """Export user data."""
+    """Export user data (GDPR export)."""
     bot = get_chatbot()
     result = bot.export_data()
-    return f"📤 {result.get('message', 'Export complete')}"
+    if "error" in result:
+        return f"❌ Error: {result['error']}"
+    job_id = result.get("job_id", "")
+    status = result.get("status", "")
+    return f"📤 **Export Started**\n\nJob ID: `{job_id}`\nStatus: {status}"
+
+
+def get_audit_logs():
+    """Get audit logs for display."""
+    bot = get_chatbot()
+    logs = bot.get_audit_logs(limit=10)
+    rows = []
+    for log in logs:
+        if "error" not in log:
+            rows.append([
+                log.get("operation", ""),
+                log.get("resource_type", ""),
+                log.get("resource_id", "")[:8] + "..." if len(log.get("resource_id", "")) > 8 else log.get("resource_id", ""),
+                log.get("created_at", ""),
+            ])
+    return rows
 
 
 def create_app() -> gr.Blocks:
@@ -340,6 +383,7 @@ def create_app() -> gr.Blocks:
                 # Demo controls
                 gr.Markdown("### 🔧 Demo Controls")
                 with gr.Row():
+                    new_chat_btn = gr.Button("💬 New Chat", variant="primary", size="sm")
                     refresh_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm")
                     cleanup_btn = gr.Button("🧹 Cleanup", variant="secondary", size="sm")
                     export_btn = gr.Button("📤 Export", variant="secondary", size="sm")
@@ -375,6 +419,14 @@ def create_app() -> gr.Blocks:
                             elem_classes=["panel"],
                         )
 
+                # Audit Logs panel
+                with gr.Accordion("📋 Audit Logs", open=False):
+                    audit_display = gr.Dataframe(
+                        headers=["Operation", "Resource", "ID", "Time"],
+                        label=None,
+                        elem_classes=["panel"],
+                    )
+
         # Status bar
         status_output = gr.Markdown("")
 
@@ -385,7 +437,7 @@ def create_app() -> gr.Blocks:
             outputs=[chatbot_ui, msg_input],
         ).then(
             update_panels,
-            outputs=[stats_display, memories_display, entities_display, relationships_display],
+            outputs=[stats_display, memories_display, entities_display, relationships_display, audit_display],
         )
 
         msg_input.submit(
@@ -394,12 +446,17 @@ def create_app() -> gr.Blocks:
             outputs=[chatbot_ui, msg_input],
         ).then(
             update_panels,
-            outputs=[stats_display, memories_display, entities_display, relationships_display],
+            outputs=[stats_display, memories_display, entities_display, relationships_display, audit_display],
+        )
+
+        new_chat_btn.click(
+            new_chat_session,
+            outputs=[status_output, chatbot_ui],
         )
 
         refresh_btn.click(
             update_panels,
-            outputs=[stats_display, memories_display, entities_display, relationships_display],
+            outputs=[stats_display, memories_display, entities_display, relationships_display, audit_display],
         )
 
         cleanup_btn.click(
@@ -413,17 +470,17 @@ def create_app() -> gr.Blocks:
         )
 
         clear_btn.click(
-            clear_memories,
-            outputs=[status_output],
+            clear_memories_and_chat,
+            outputs=[status_output, chatbot_ui],
         ).then(
             update_panels,
-            outputs=[stats_display, memories_display, entities_display, relationships_display],
+            outputs=[stats_display, memories_display, entities_display, relationships_display, audit_display],
         )
 
-        # Initialize on load
+        # Initialize on load only - use manual refresh to avoid rate limits
         app.load(
             update_panels,
-            outputs=[stats_display, memories_display, entities_display, relationships_display],
+            outputs=[stats_display, memories_display, entities_display, relationships_display, audit_display],
         )
 
     return app
